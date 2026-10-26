@@ -1,0 +1,24 @@
+.{
+    .name = .genesis_shell,
+    .version = "0.1.0",
+    .fingerprint = 0x5c0b82626824d91e,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .phantom = .{
+            .url = "git+https://git.lilithsemi.com/PhantomUI/phantom?ref=feat/system-shell#87829e3c56482bcc0660113fb57bd65c64caff3a",
+            .hash = "phantom-0.1.0-HsUDTN7pLQBCOpHpwn0lTHr2H05m9DilnxB30Xwit21F",
+        },
+        .dbus = .{
+            .url = "git+https://git.lilithsemi.com/LilithSemi/dbus.zig#d45004a1890e3242a88f0e688f76428ff91b40d1",
+            .hash = "dbus-0.1.0-8F4MwEIwBABTtotrVOCyaXA6MpD0cwaqZ6-dvGtdS50P",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "assets",
+        "LICENSE",
+        "README.md",
+    },
+}
