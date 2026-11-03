@@ -16,6 +16,7 @@ pub const Network = struct {
         strength: u8,
         networking_enabled: bool = true,
         wifi_enabled: bool = false,
+        cellular_available: bool = false,
         cellular_enabled: bool = false,
     };
     pub const WifiNetwork = phantom.platform.WifiNetwork;
@@ -40,6 +41,10 @@ pub const Network = struct {
 
     pub fn canSetWifi(self: Network) bool {
         return self.vtable.set_wifi_enabled != null;
+    }
+
+    pub fn canSetCellular(self: Network) bool {
+        return self.vtable.set_cellular_enabled != null;
     }
 
     pub fn setNetworkingEnabled(self: Network, enabled: bool) bool {

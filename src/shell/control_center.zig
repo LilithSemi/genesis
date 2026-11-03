@@ -32,6 +32,7 @@ pub const ControlCenter = struct {
         on_close: ?*const fn (*anyopaque) void = null,
         ctx: *anyopaque = undefined,
         scroll_controller: phantom.ScrollController = .{},
+        quick_scroll_controller: phantom.ScrollController = .{},
         notification_service: Notifications = Notifications.unavailable,
         network_service: Network = Network.unavailable,
         host_platform: phantom.Platform = .{},
@@ -65,6 +66,17 @@ pub const ControlCenter = struct {
         network_box: phantom.DecoratedBox = undefined,
         network_size: phantom.SizedBox = undefined,
         network_tap: phantom.GestureDetector = undefined,
+        cellular_title: phantom.Text = undefined,
+        cellular_detail: phantom.Text = undefined,
+        cellular_children: [2]phantom.Widget = undefined,
+        cellular_column: phantom.Flex = undefined,
+        cellular_column_size: phantom.SizedBox = undefined,
+        cellular_switch: phantom.Switch = undefined,
+        cellular_row_children: [2]phantom.Widget = undefined,
+        cellular_row: phantom.Flex = undefined,
+        cellular_padding: phantom.Padding = undefined,
+        cellular_box: phantom.DecoratedBox = undefined,
+        cellular_size: phantom.SizedBox = undefined,
         wifi_header_label: phantom.Text = undefined,
         wifi_scan_label: phantom.Text = undefined,
         wifi_scan_button: phantom.Button = undefined,
@@ -98,8 +110,11 @@ pub const ControlCenter = struct {
         power_padding: phantom.Padding = undefined,
         power_box: phantom.DecoratedBox = undefined,
         power_size: phantom.SizedBox = undefined,
-        quick_children: [2]phantom.Widget = undefined,
+        quick_children: [3]phantom.Widget = undefined,
         quick_row: phantom.Flex = undefined,
+        quick_strip_size: phantom.SizedBox = undefined,
+        quick_scroll_padding: phantom.Padding = undefined,
+        quick_scroll: phantom.ScrollView = undefined,
         quick_size: phantom.SizedBox = undefined,
         audio_title: phantom.Text = undefined,
         audio_slider: phantom.Slider = undefined,
@@ -224,6 +239,11 @@ pub const ControlCenter = struct {
         fn toggleWifi(ctx: *anyopaque, enabled: bool) void {
             const s: *@This() = @ptrCast(@alignCast(ctx));
             _ = s.network_service.setWifiEnabled(enabled);
+        }
+
+        fn toggleCellular(ctx: *anyopaque, enabled: bool) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            _ = s.network_service.setCellularEnabled(enabled);
         }
 
         fn toggleNetworks(ctx: *anyopaque) void {
@@ -376,17 +396,25 @@ pub const ControlCenter = struct {
             s.network_service = network_service;
             const network_reading = network_service.read();
             const network_detail = switch (network_reading) {
-                .ok => |state| switch (state.kind) {
-                    .none => "Offline",
-                    .ethernet => "Ethernet connected",
-                    .wifi => "Connected",
-                    .cellular => "Cellular connected",
-                },
+                // This card controls the Wi-Fi radio, not whichever transport
+                // Android currently selected as its default network. Cellular
+                // and Ethernet remain useful in the panel indicator, but must
+                // not turn into the subtitle of a Wi-Fi switch.
+                .ok => |state| if (!state.wifi_enabled)
+                    "Off"
+                else if (state.kind == .wifi)
+                    "Connected"
+                else
+                    "On",
                 .pending => "Checking…",
                 .unsupported, .unavailable => "Unavailable",
             };
+            const wifi_active = switch (network_reading) {
+                .ok => |state| state.wifi_enabled,
+                else => false,
+            };
             s.network_title = .{ .text = "Wi-Fi", .size = 14, .font = theme.body_bold_font, .color = theme.colors.fg };
-            s.network_detail = .{ .text = network_detail, .size = 11, .color = if (network_reading.shows()) theme.accent else theme.colors.fg_muted };
+            s.network_detail = .{ .text = network_detail, .size = 11, .color = if (wifi_active) theme.accent else theme.colors.fg_muted };
             s.network_children = .{ s.network_title.widget(), s.network_detail.widget() };
             s.network_column = .{ .direction = .vertical, .main = .center, .cross = .start, .main_size = .min, .gap = 4, .children = &s.network_children };
             s.network_column_size = .{ .width = 78, .height = 46, .child = s.network_column.widget() };
@@ -412,6 +440,44 @@ pub const ControlCenter = struct {
             s.network_size = .{ .width = 154, .height = 64, .child = s.network_box.widget() };
             s.network_tap = .{ .on_tap = toggleNetworks, .ctx = s, .child = s.network_size.widget() };
 
+            const cellular_available = switch (network_reading) {
+                .ok => |state| state.cellular_available,
+                else => false,
+            };
+            const cellular_active = switch (network_reading) {
+                .ok => |state| state.cellular_enabled,
+                else => false,
+            };
+            const cellular_detail = switch (network_reading) {
+                .ok => |state| if (!state.cellular_enabled)
+                    "Off"
+                else if (state.kind == .cellular)
+                    "Connected"
+                else
+                    "On",
+                .pending => "Checking…",
+                .unsupported, .unavailable => "Unavailable",
+            };
+            s.cellular_title = .{ .text = "Cellular", .size = 14, .font = theme.body_bold_font, .color = theme.colors.fg };
+            s.cellular_detail = .{ .text = cellular_detail, .size = 11, .color = if (cellular_active) theme.accent else theme.colors.fg_muted };
+            s.cellular_children = .{ s.cellular_title.widget(), s.cellular_detail.widget() };
+            s.cellular_column = .{ .direction = .vertical, .main = .center, .cross = .start, .main_size = .min, .gap = 4, .children = &s.cellular_children };
+            s.cellular_column_size = .{ .width = 78, .height = 46, .child = s.cellular_column.widget() };
+            s.cellular_switch = .{
+                .value = cellular_active,
+                .enabled = cellular_available and network_service.canSetCellular(),
+                .width = 38,
+                .height = 22,
+                .label = "Cellular",
+                .on_changed = toggleCellular,
+                .ctx = s,
+            };
+            s.cellular_row_children = .{ s.cellular_column_size.widget(), s.cellular_switch.widget() };
+            s.cellular_row = phantom.Row(.{ .main = .space_between, .cross = .center, .children = &s.cellular_row_children });
+            s.cellular_padding = .{ .insets = phantom.LogicalEdgeInsets.symmetric(10, 9), .child = s.cellular_row.widget() };
+            s.cellular_box = .{ .color = alpha(theme.colors.bg_medium, 0.86), .radius = 10, .border_color = alpha(theme.colors.fg_dim, 0.42), .border_width = 1, .child = s.cellular_padding.widget() };
+            s.cellular_size = .{ .width = 154, .height = 64, .child = s.cellular_box.widget() };
+
             const primary = services.ServicesScope.of(b).battery.primary();
             const power_detail = if (primary) |device|
                 std.fmt.bufPrint(&s.power_buf, "{d}% · {s}", .{ device.percent, switch (device.status) {
@@ -430,9 +496,24 @@ pub const ControlCenter = struct {
             s.power_padding = .{ .insets = phantom.LogicalEdgeInsets.symmetric(12, 9), .child = s.power_column.widget() };
             s.power_box = .{ .color = alpha(theme.colors.bg_medium, 0.86), .radius = 10, .border_color = alpha(theme.colors.fg_dim, 0.42), .border_width = 1, .child = s.power_padding.widget() };
             s.power_size = .{ .width = 154, .height = 64, .child = s.power_box.widget() };
-            s.quick_children = .{ s.network_tap.widget(), s.power_size.widget() };
-            s.quick_row = phantom.Row(.{ .main = .space_between, .cross = .center, .children = &s.quick_children });
-            s.quick_size = .{ .width = 318, .height = 64, .child = s.quick_row.widget() };
+            var quick_count: usize = 0;
+            s.quick_children[quick_count] = s.network_tap.widget();
+            quick_count += 1;
+            if (cellular_available) {
+                s.quick_children[quick_count] = s.cellular_size.widget();
+                quick_count += 1;
+            }
+            s.quick_children[quick_count] = s.power_size.widget();
+            quick_count += 1;
+            s.quick_row = phantom.Row(.{ .main = .start, .cross = .center, .main_size = .min, .gap = 10, .children = s.quick_children[0..quick_count] });
+            const quick_width = @as(f32, @floatFromInt(quick_count)) * 154 + @as(f32, @floatFromInt(quick_count - 1)) * 10;
+            s.quick_strip_size = .{ .width = quick_width, .height = 64, .child = s.quick_row.widget() };
+            // Scrollbars are painted over the edge of their viewport. Reserve
+            // a gutter below the cards so the horizontal bar never covers the
+            // tile border or its controls.
+            s.quick_scroll_padding = .{ .insets = .{ .bottom = 8 }, .child = s.quick_strip_size.widget() };
+            s.quick_scroll = .{ .axis = .horizontal, .controller = &s.quick_scroll_controller, .id = "quick-controls", .child = s.quick_scroll_padding.widget() };
+            s.quick_size = .{ .width = 318, .height = 72, .child = s.quick_scroll.widget() };
             s.panel_children[panel_count] = s.quick_size.widget();
             panel_count += 1;
 
@@ -638,7 +719,7 @@ pub const ControlCenter = struct {
             const panel_height = @max(@as(f32, 240), viewport.height - 60);
             // Keep the history within the panel's padded content box: 32px of
             // panel padding, the 38px header and the 14px column gap.
-            s.scroll_size = .{ .width = 318, .height = @max(60, panel_height - 214 - optional_height - network_panel_height), .child = s.scroll.widget() };
+            s.scroll_size = .{ .width = 318, .height = @max(60, panel_height - 222 - optional_height - network_panel_height), .child = s.scroll.widget() };
             s.panel_children[panel_count] = s.scroll_size.widget();
             panel_count += 1;
             s.panel_column = .{
@@ -796,6 +877,61 @@ test "control center renders notification history supplied by the session servic
     };
     try std.testing.expect(summary_y != null);
     try std.testing.expect(summary_y.? < 320);
+    try harness.expectNoFaults();
+}
+
+test "Wi-Fi card does not label the cellular transport as Wi-Fi" {
+    const Host = struct {
+        fn read(_: *anyopaque) services.Reading(Network.State) {
+            return .{ .ok = .{
+                .kind = .cellular,
+                .strength = 4,
+                .wifi_enabled = true,
+                .cellular_available = true,
+                .cellular_enabled = true,
+            } };
+        }
+        fn setWifi(_: *anyopaque, _: bool) bool {
+            return true;
+        }
+        fn setCellular(_: *anyopaque, _: bool) bool {
+            return true;
+        }
+    };
+    var target: u8 = 0;
+    const vtable = Network.VTable{ .read = Host.read, .set_wifi_enabled = Host.setWifi, .set_cellular_enabled = Host.setCellular };
+    var service_set = services.Services{ .network = .{ .ptr = &target, .vtable = &vtable } };
+    var center = ControlCenter{};
+    var scope = services.ServicesScope{ .services = &service_set, .child = center.widget() };
+    var harness = try phantom.testing.mount(std.testing.allocator, scope.widget());
+    defer harness.deinit();
+    try harness.pump();
+
+    try harness.expectHtml(">Wi-Fi<");
+    try harness.expectHtml(">On<");
+    try harness.expectHtml(">Cellular<");
+    try harness.expectHtml(">Connected<");
+    try harness.expectNoHtml("Cellular connected");
+    try harness.expectNoFaults();
+}
+
+test "control center omits cellular tile when the host has no modem" {
+    const Host = struct {
+        fn read(_: *anyopaque) services.Reading(Network.State) {
+            return .{ .ok = .{ .kind = .wifi, .strength = 4, .wifi_enabled = true } };
+        }
+    };
+    var target: u8 = 0;
+    const vtable = Network.VTable{ .read = Host.read };
+    var service_set = services.Services{ .network = .{ .ptr = &target, .vtable = &vtable } };
+    var center = ControlCenter{};
+    var scope = services.ServicesScope{ .services = &service_set, .child = center.widget() };
+    var harness = try phantom.testing.mount(std.testing.allocator, scope.widget());
+    defer harness.deinit();
+    try harness.pump();
+
+    try harness.expectHtml(">Wi-Fi<");
+    try harness.expectNoHtml(">Cellular<");
     try harness.expectNoFaults();
 }
 

@@ -5,6 +5,7 @@ const clock_mod = @import("../services/clock.zig");
 const battery_mod = @import("../services/battery.zig");
 const network_mod = @import("../services/network.zig");
 const apps_mod = @import("../services/apps.zig");
+const notifications_mod = @import("../services/notifications.zig");
 const app_index = @import("../xdg/app_index.zig");
 const phantom = @import("phantom");
 
@@ -15,6 +16,8 @@ const Battery = battery_mod.Battery;
 const Network = network_mod.Network;
 const Apps = apps_mod.Apps;
 const AppEntry = apps_mod.Entry;
+const Notifications = notifications_mod.Notifications;
+const Notification = notifications_mod.Notification;
 const session_supported = builtin.os.tag == .linux and !builtin.abi.isAndroid();
 const Session = if (session_supported) @import("session.zig").Session else void;
 
@@ -38,7 +41,10 @@ pub const Platform = struct {
     io: std.Io = std.Io.failing,
     owner: ?*phantom.BuildOwner = null,
     arena: ?std.heap.ArenaAllocator = null,
+    host_arena: ?std.heap.ArenaAllocator = null,
     entries: []AppEntry = &.{},
+    host_entries: std.ArrayList(AppEntry) = .empty,
+    host_notifications: std.ArrayList(Notification) = .empty,
     session: if (session_supported) ?*Session else void = if (session_supported) null else {},
     session_pump: if (session_supported) ?phantom.Scheduler.Handle else void = if (session_supported) null else {},
     hardware_poll: ?phantom.Scheduler.Handle = null,
@@ -59,12 +65,16 @@ pub const Platform = struct {
     pub fn initWithOwner(self: *Platform, io: std.Io, owner: *phantom.BuildOwner) void {
         self.init(io);
         self.owner = owner;
-        const environ = owner.environ orelse return;
-        self.arena = std.heap.ArenaAllocator.init(owner.gpa);
-        self.entries = app_index.scan(self.arena.?.allocator(), io, environ) catch &.{};
+        self.host_arena = std.heap.ArenaAllocator.init(owner.gpa);
         self.services.apps = self.apps();
         self.services.network = self.network();
         self.services.battery = self.battery();
+        self.services.notifications = self.notifications();
+        if (owner.environ) |environ| {
+            self.arena = std.heap.ArenaAllocator.init(owner.gpa);
+            self.entries = app_index.scan(self.arena.?.allocator(), io, environ) catch &.{};
+        }
+        self.refreshAppsAndNotifications();
         self.refreshHardware();
         self.hardware_poll = owner.scheduler.every(owner.gpa, 2 * std.time.ns_per_s, self, pollHardware) catch null;
         if (phantom.compositor.fromOwner(owner)) |host| host.setChangeListener(self, compositorChanged);
@@ -93,6 +103,12 @@ pub const Platform = struct {
             self.session = null;
         }
         self.services = .{};
+        self.host_entries.deinit(if (self.owner) |owner| owner.gpa else std.heap.page_allocator);
+        self.host_entries = .empty;
+        self.host_notifications.deinit(if (self.owner) |owner| owner.gpa else std.heap.page_allocator);
+        self.host_notifications = .empty;
+        if (self.host_arena) |*arena| arena.deinit();
+        self.host_arena = null;
         if (self.arena) |*arena| arena.deinit();
         self.arena = null;
         self.entries = &.{};
@@ -114,6 +130,10 @@ pub const Platform = struct {
 
     pub fn battery(self: *Platform) Battery {
         return .{ .ptr = self, .vtable = &battery_vtable };
+    }
+
+    pub fn notifications(self: *Platform) Notifications {
+        return .{ .ptr = self, .vtable = &notifications_vtable };
     }
 
     const network_vtable = Network.VTable{
@@ -198,6 +218,7 @@ pub const Platform = struct {
 
     fn pollHardware(ptr: *anyopaque) void {
         const self: *Platform = @ptrCast(@alignCast(ptr));
+        self.refreshAppsAndNotifications();
         self.refreshHardware();
         self.services.notifyChanged();
     }
@@ -214,6 +235,7 @@ pub const Platform = struct {
             .strength = if (state.strength) |percent| @min(4, @as(u8, @intCast((@as(u16, percent) * 4 + 99) / 100))) else 0,
             .networking_enabled = state.networking_enabled,
             .wifi_enabled = state.wifi_enabled,
+            .cellular_available = state.cellular_available,
             .cellular_enabled = state.cellular_enabled,
         } } else .unavailable;
 
@@ -243,6 +265,7 @@ pub const Platform = struct {
     fn readApps(ptr: *anyopaque) Reading([]const AppEntry) {
         const self: *Platform = @ptrCast(@alignCast(ptr));
         const owner = self.owner orelse return .unavailable;
+        if (self.host_entries.items.len != 0) return .{ .ok = self.host_entries.items };
         if (phantom.compositor.fromOwner(owner)) |host| {
             for (self.entries) |*entry| {
                 entry.running = host.isAppRunning(entry.id, entry.startup_wm_class);
@@ -254,12 +277,86 @@ pub const Platform = struct {
     fn launchApp(ptr: *anyopaque, id: []const u8) anyerror!void {
         const self: *Platform = @ptrCast(@alignCast(ptr));
         const owner = self.owner orelse return error.AppsUnavailable;
+        if (owner.platform.launchApplication(id)) return;
         const environ = owner.environ orelse return error.NoEnvironment;
         const host = phantom.compositor.fromOwner(owner) orelse return error.NoCompositor;
         for (self.entries) |entry| {
             if (std.mem.eql(u8, entry.id, id)) return host.launch(environ, entry.argv);
         }
         return error.AppNotFound;
+    }
+
+    fn refreshAppsAndNotifications(self: *Platform) void {
+        const owner = self.owner orelse return;
+        const host_arena = if (self.host_arena) |*arena| arena else return;
+        _ = host_arena.reset(.retain_capacity);
+        const strings = host_arena.allocator();
+        if (owner.platform.readApplications()) |host_apps| {
+            self.host_entries.clearRetainingCapacity();
+            self.host_entries.ensureTotalCapacity(owner.gpa, host_apps.len) catch return;
+            for (host_apps) |entry| self.host_entries.appendAssumeCapacity(.{
+                .id = strings.dupe(u8, entry.id) catch return,
+                .name = strings.dupe(u8, entry.name) catch return,
+                .icon_bytes = strings.dupe(u8, entry.icon_png) catch return,
+                .preview_bytes = strings.dupe(u8, entry.preview_png) catch return,
+                .argv = &.{},
+                .running = entry.running,
+            });
+        }
+        if (owner.platform.readSystemNotifications()) |items| {
+            self.host_notifications.clearRetainingCapacity();
+            self.host_notifications.ensureTotalCapacity(owner.gpa, items.len) catch return;
+            for (items) |item| self.host_notifications.appendAssumeCapacity(.{
+                .id = notificationId(item.key),
+                .app_name = strings.dupe(u8, item.app_name) catch return,
+                .app_icon = "",
+                .summary = strings.dupe(u8, item.title) catch return,
+                .body = strings.dupe(u8, item.body) catch return,
+                .created_ns = @as(i96, item.posted_ms) * std.time.ns_per_ms,
+            });
+        }
+    }
+
+    fn notificationId(key: []const u8) u32 {
+        return @truncate(std.hash.Wyhash.hash(0, key));
+    }
+
+    const notifications_vtable = Notifications.VTable{
+        .read = readNotifications,
+        .dismiss = dismissNotification,
+        .clear = clearNotifications,
+        .invoke = invokeNotification,
+    };
+
+    fn readNotifications(ptr: *anyopaque) Reading([]const Notification) {
+        const self: *Platform = @ptrCast(@alignCast(ptr));
+        if (self.owner == null) return .unavailable;
+        return .{ .ok = self.host_notifications.items };
+    }
+
+    fn notificationKey(self: *Platform, id: u32) ?[]const u8 {
+        const owner = self.owner orelse return null;
+        const items = owner.platform.readSystemNotifications() orelse return null;
+        for (items) |item| if (notificationId(item.key) == id) return item.key;
+        return null;
+    }
+
+    fn dismissNotification(ptr: *anyopaque, id: u32) void {
+        const self: *Platform = @ptrCast(@alignCast(ptr));
+        const owner = self.owner orelse return;
+        if (self.notificationKey(id)) |key| _ = owner.platform.dismissSystemNotification(key);
+    }
+
+    fn clearNotifications(ptr: *anyopaque) void {
+        const self: *Platform = @ptrCast(@alignCast(ptr));
+        const owner = self.owner orelse return;
+        _ = owner.platform.clearSystemNotifications();
+    }
+
+    fn invokeNotification(ptr: *anyopaque, id: u32, _: []const u8) void {
+        const self: *Platform = @ptrCast(@alignCast(ptr));
+        const owner = self.owner orelse return;
+        if (self.notificationKey(id)) |key| _ = owner.platform.invokeSystemNotification(key);
     }
 
     fn compositorChanged(ptr: *anyopaque) void {

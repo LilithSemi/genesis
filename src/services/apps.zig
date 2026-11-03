@@ -11,6 +11,8 @@ pub const Entry = struct {
     /// Encoded PNG/SVG bytes resolved through the XDG icon search path.
     /// Empty means the theme did not provide a renderable icon.
     icon_bytes: []const u8 = "",
+    /// Encoded preview of the active task/window, when the host can capture it.
+    preview_bytes: []const u8 = "",
     categories: []const u8 = "",
     startup_wm_class: []const u8 = "",
     argv: []const []const u8,

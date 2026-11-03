@@ -11,8 +11,34 @@ pub const control_center = @import("shell/control_center.zig");
 pub const notification_toasts = @import("shell/notification_toasts.zig");
 pub const calendar = @import("shell/calendar.zig");
 pub const workspaces = @import("shell/workspaces.zig");
+pub const active_apps = @import("shell/active_apps.zig");
 
 const wallpaper_bytes = @embedFile("assets/wallpaper/desktop/default-sm.jpg");
+var active_shell: ?*Shell.State = null;
+
+pub fn goHome() void {
+    const s = active_shell orelse return;
+    s.launcher_visible = false;
+    s.control_center_visible = false;
+    s.calendar_visible = false;
+    if (s.overview_visible) {
+        s.overview_visible = false;
+        if (phantom.compositor.fromOwner(s.base.element.owner)) |host| host.setOverview(false);
+    }
+    phantom.markNeedsBuild(s);
+}
+
+pub fn showLauncher() void {
+    const s = active_shell orelse return;
+    s.launcher_visible = true;
+    s.control_center_visible = false;
+    s.calendar_visible = false;
+    if (s.overview_visible) {
+        s.overview_visible = false;
+        if (phantom.compositor.fromOwner(s.base.element.owner)) |host| host.setOverview(false);
+    }
+    phantom.markNeedsBuild(s);
+}
 
 /// The root of every Genesis surface. Reads its colors from the nearest
 /// `phantom.Theme`, so a theme variant restyles the whole shell without a
@@ -51,6 +77,8 @@ pub const Shell = struct {
         workspace_view: workspaces.WorkspaceSwitcher = undefined,
         workspace_align: phantom.Align = undefined,
         workspace_slot: phantom.Positioned = undefined,
+        active_apps_view: active_apps.ActiveApps = undefined,
+        active_apps_slot: phantom.Positioned = undefined,
         toast_view: notification_toasts.NotificationToasts = .{},
         toast_slot: phantom.Positioned = undefined,
         layers: [8]phantom.Widget = undefined,
@@ -59,6 +87,11 @@ pub const Shell = struct {
 
         pub fn initState(s: *@This(), config: *const Shell) anyerror!void {
             s.services = config.services;
+            active_shell = s;
+        }
+
+        pub fn dispose(s: *@This()) void {
+            if (active_shell == s) active_shell = null;
         }
 
         pub fn didUpdateWidget(s: *@This(), config: *const Shell) anyerror!void {
@@ -126,6 +159,14 @@ pub const Shell = struct {
         fn minimizeFocused(ctx: *anyopaque) void {
             const s: *@This() = @ptrCast(@alignCast(ctx));
             if (phantom.compositor.fromOwner(s.base.element.owner)) |host| host.minimizeFocused();
+            phantom.markNeedsBuild(s);
+        }
+
+        fn closeOverview(ctx: *anyopaque) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            if (!s.overview_visible) return;
+            s.overview_visible = false;
+            if (phantom.compositor.fromOwner(s.base.element.owner)) |host| host.setOverview(false);
             phantom.markNeedsBuild(s);
         }
 
@@ -218,11 +259,16 @@ pub const Shell = struct {
                 layer_count += 1;
             }
             if (s.overview_visible) {
-                const active = if (phantom.compositor.fromOwner(b.owner)) |host| host.activeWorkspace() else 0;
-                s.workspace_view = .{ .active = active, .on_select = selectWorkspace, .on_minimize = minimizeFocused, .ctx = s };
-                s.workspace_align = .{ .alignment = .top_center, .child = s.workspace_view.widget() };
-                s.workspace_slot = .{ .top = 12, .left = 0, .right = 0, .child = s.workspace_align.widget() };
-                s.layers[layer_count] = s.workspace_slot.widget();
+                if (phantom.compositor.fromOwner(b.owner)) |host| {
+                    s.workspace_view = .{ .active = host.activeWorkspace(), .on_select = selectWorkspace, .on_minimize = minimizeFocused, .ctx = s };
+                    s.workspace_align = .{ .alignment = .top_center, .child = s.workspace_view.widget() };
+                    s.workspace_slot = .{ .top = 12, .left = 0, .right = 0, .child = s.workspace_align.widget() };
+                    s.layers[layer_count] = s.workspace_slot.widget();
+                } else {
+                    s.active_apps_view = .{ .on_close = closeOverview, .ctx = s };
+                    s.active_apps_slot = .{ .top = 0, .left = 0, .right = 0, .bottom = 0, .child = s.active_apps_view.widget() };
+                    s.layers[layer_count] = s.active_apps_slot.widget();
+                }
                 layer_count += 1;
             }
             s.layers[layer_count] = s.dock_slot.widget();

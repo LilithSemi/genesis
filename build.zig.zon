@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .phantom = .{
-            .url = "git+https://git.lilithsemi.com/PhantomUI/phantom?ref=feat/system-shell#87829e3c56482bcc0660113fb57bd65c64caff3a",
-            .hash = "phantom-0.1.0-HsUDTN7pLQBCOpHpwn0lTHr2H05m9DilnxB30Xwit21F",
+            .url = "git+https://git.lilithsemi.com/PhantomUI/phantom#504945290a7b3f74c982ee1b9930ca61031c157c",
+            .hash = "phantom-0.1.0-HsUDTH6PLwBCaY8CVjDC3b5VPUmlqPE8k4w9W64jQg3c",
         },
         .dbus = .{
             .url = "git+https://git.lilithsemi.com/LilithSemi/dbus.zig#d45004a1890e3242a88f0e688f76428ff91b40d1",
